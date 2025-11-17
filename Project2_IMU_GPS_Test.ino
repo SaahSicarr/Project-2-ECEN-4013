@@ -1,12 +1,17 @@
 /*******************************************************
  * Teensy 4.1 — IMU+MAG+GPS demo without LSM6DS library
  * - LSM6DSOX via raw I2C: ACC [m/s^2], GYR [rad/s]
- * - LIS3MDL via Adafruit lib: MAG [µT] (already works for you)
- * - GPS via UART (Serial1): lat, lon, alt (MSL & Ellipsoid), sats
+ * - LIS3MDL via Adafruit lib: MAG [µT]
+ * - GPS via UART (Serial1): lat, lon, alt (MSL), sats
+ * 
+ * OUTPUT FORMAT (one line per sample, CSV):
+ * time,ax,ay,az,gx,gy,gz,mx,my,mz,lat,lon,alt,sats
  *******************************************************/
 #include <Wire.h>
 #include <Adafruit_LIS3MDL.h>
 #include <Adafruit_Sensor.h>
+#include <string.h>
+#include <stdlib.h>
 
 // ---------- I2C addresses ----------
 const uint8_t LSM6_ADDR = 0x6A;   // from your scan
@@ -38,7 +43,8 @@ struct GPSFix {
   bool   have_msl = false, have_sep = false;
   int    sats = 0;
 } gps;
-char nmea[128]; uint8_t nmea_len = 0;
+char nmea[128]; 
+uint8_t nmea_len = 0;
 
 // ---------- MAG (Adafruit LIS3MDL) ----------
 Adafruit_LIS3MDL lis3;
@@ -67,7 +73,7 @@ bool i2cRead8(uint8_t addr, uint8_t reg, uint8_t &val) {
   return true;
 }
 
-// ---------- NMEA helpers (same as before) ----------
+// ---------- NMEA helpers ----------
 static double parseCoordDeg(const char* field, bool isLat) {
   if (!field || !*field) return 0.0;
   double v = atof(field);
@@ -85,11 +91,13 @@ static bool nmeaChecksumOK(const char* s){
   if (*s!='$') return false;
   uint8_t cs=0; s++;
   while (*s && *s!='*') cs ^= (uint8_t)*s++;
-  if (*s!='*') return false; s++;
+  if (*s!='*') return false; 
+  s++;
   return cs == ((hex2u8(s[0])<<4)|hex2u8(s[1]));
 }
 static void parseGGA(char* line){
-  int f=0; char* tok=strtok(line,",");
+  int f=0; 
+  char* tok=strtok(line,",");
   while(tok){
     switch(f){
       case 2: gps.lat_deg=parseCoordDeg(tok,true);break;
@@ -101,12 +109,16 @@ static void parseGGA(char* line){
       case 9: gps.alt_msl_m = atof(tok); gps.have_msl=true; break;
       case 11:gps.geoid_sep_m = atof(tok); gps.have_sep=true; break;
     }
-    tok=strtok(NULL,","); f++;
+    tok=strtok(NULL,","); 
+    f++;
   }
 }
 static void parseRMC(char* line){
-  int f=0; char* tok=strtok(line,",");
-  bool ok=false; double lat=0,lon=0; char ns=0,ew=0;
+  int f=0; 
+  char* tok=strtok(line,",");
+  bool ok=false; 
+  double lat=0,lon=0; 
+  char ns=0,ew=0;
   while(tok){
     switch(f){
       case 2: ok=(*tok=='A'); break;
@@ -115,15 +127,23 @@ static void parseRMC(char* line){
       case 5: lon=parseCoordDeg(tok,false); break;
       case 6: ew=*tok; break;
     }
-    tok=strtok(NULL,","); f++;
+    tok=strtok(NULL,","); 
+    f++;
   }
-  if(ok){ if(ns=='S') lat=-lat; if(ew=='W') lon=-lon;
-    gps.lat_deg=lat; gps.lon_deg=lon; gps.valid=true; }
+  if(ok){ 
+    if(ns=='S') lat=-lat; 
+    if(ew=='W') lon=-lon;
+    gps.lat_deg=lat; 
+    gps.lon_deg=lon; 
+    gps.valid=true; 
+  }
 }
 static void handleNMEA(){
   if (nmea_len<6 || nmea[0]!='$' || !nmeaChecksumOK(nmea)) return;
-  char buf[128]; strncpy(buf,nmea,sizeof(buf)); buf[127]=0;
-  if (strstr(buf,"GGA")) parseGGA(buf);
+  char buf[128]; 
+  strncpy(buf,nmea,sizeof(buf)); 
+  buf[127]=0;
+  if (strstr(buf,"GGA"))      parseGGA(buf);
   else if (strstr(buf,"RMC")) parseRMC(buf);
 }
 
@@ -146,9 +166,10 @@ bool initLSM6(){
 }
 
 bool lsm6_ok = false;
+uint32_t t_last = 0;
 
 void setup() {
-  Serial.begin(115200);
+  Serial.begin(115200);   // USB serial to PC (GUI)
   Wire.begin();
   delay(300);
 
@@ -157,7 +178,7 @@ void setup() {
 
   // Init LSM6 via raw I2C
   lsm6_ok = initLSM6();
-  if (!lsm6_ok) Serial.println("LSM6DSOX init FAILED (check 3.3V/SDA/SCL/addr 0x6A).");
+  if (!lsm6_ok) Serial.println("LSM6DSOX init FAILED");
 
   // Init LIS3MDL (mag)
   if (lis3.begin_I2C(LIS3_ADDR)) {
@@ -167,94 +188,105 @@ void setup() {
     lis3.setOperationMode(LIS3MDL_CONTINUOUSMODE);
     mag_ok = true;
   } else {
-    Serial.println("LIS3MDL init FAILED (addr 0x1C).");
+    Serial.println("LIS3MDL init FAILED");
   }
 
-  Serial.println("Ready. Move the board and go outside/near a window for GPS.");
+  // Optional: one line the GUI will ignore (no commas)
+  Serial.println("READY");
 }
 
-uint32_t t_last = 0;
-
 void loop() {
-  // --- GPS read
-  while (Serial1.available()){
+  // --- GPS read / NMEA accumulate ---
+  while (Serial1.available()) {
     char c = Serial1.read();
-    if (c=='\r') continue;
-    if (c=='\n'){ nmea[nmea_len]=0; handleNMEA(); nmea_len=0; }
-    else if (nmea_len < sizeof(nmea)-1) nmea[nmea_len++]=c;
-    else nmea_len=0;
+    if (c == '\r') continue;
+    if (c == '\n') {
+      nmea[nmea_len] = 0;
+      handleNMEA();
+      nmea_len = 0;
+    } else if (nmea_len < sizeof(nmea) - 1) {
+      nmea[nmea_len++] = c;
+    } else {
+      nmea_len = 0;  // overflow, reset
+    }
   }
 
+  // Sample + print about every 100 ms
   if (millis() - t_last >= 100) {
     t_last = millis();
 
-    // --- GYRO read (rad/s)
+    // --------- READ SENSORS ----------
+    // Defaults if something fails
+    float ax_ms2 = 0, ay_ms2 = 0, az_ms2 = 0;
+    float gx_rs  = 0, gy_rs  = 0, gz_rs  = 0;
+    float mx_uT  = 0, my_uT  = 0, mz_uT  = 0;
+    double lat   = 0, lon    = 0, alt   = 0;
+    int sats     = 0;
+
+    // --- GYRO + ACC from LSM6 ---
     if (lsm6_ok) {
       uint8_t b[6];
+
+      // Gyro
       if (i2cReadBuff(LSM6_ADDR, LSM6_OUTX_L_G, b, 6)) {
-        int16_t gx = (int16_t)(b[1]<<8 | b[0]);
-        int16_t gy = (int16_t)(b[3]<<8 | b[2]);
-        int16_t gz = (int16_t)(b[5]<<8 | b[4]);
-        float gx_rs = gx * (GYRO_DPS_PER_LSB * DEG2RAD);
-        float gy_rs = gy * (GYRO_DPS_PER_LSB * DEG2RAD);
-        float gz_rs = gz * (GYRO_DPS_PER_LSB * DEG2RAD);
-        Serial.print("GYR[rad/s]: ");
-        Serial.print(gx_rs,3); Serial.print(", ");
-        Serial.print(gy_rs,3); Serial.print(", ");
-        Serial.print(gz_rs,3);
-      } else {
-        Serial.print("GYR[rad/s]: -, -, -");
+        int16_t gx_raw = (int16_t)(b[1] << 8 | b[0]);
+        int16_t gy_raw = (int16_t)(b[3] << 8 | b[2]);
+        int16_t gz_raw = (int16_t)(b[5] << 8 | b[4]);
+        gx_rs = gx_raw * (GYRO_DPS_PER_LSB * DEG2RAD);
+        gy_rs = gy_raw * (GYRO_DPS_PER_LSB * DEG2RAD);
+        gz_rs = gz_raw * (GYRO_DPS_PER_LSB * DEG2RAD);
       }
 
-      Serial.print("  |  ");
-
-      // --- ACC read (m/s^2)
+      // Accel
       if (i2cReadBuff(LSM6_ADDR, LSM6_OUTX_L_A, b, 6)) {
-        int16_t ax = (int16_t)(b[1]<<8 | b[0]);
-        int16_t ay = (int16_t)(b[3]<<8 | b[2]);
-        int16_t az = (int16_t)(b[5]<<8 | b[4]);
-        float ax_ms2 = ax * (ACC_G_PER_LSB * G_SI);
-        float ay_ms2 = ay * (ACC_G_PER_LSB * G_SI);
-        float az_ms2 = az * (ACC_G_PER_LSB * G_SI);
-        Serial.print("ACC[m/s^2]: ");
-        Serial.print(ax_ms2,3); Serial.print(", ");
-        Serial.print(ay_ms2,3); Serial.print(", ");
-        Serial.print(az_ms2,3);
-      } else {
-        Serial.print("ACC[m/s^2]: -, -, -");
+        int16_t ax_raw = (int16_t)(b[1] << 8 | b[0]);
+        int16_t ay_raw = (int16_t)(b[3] << 8 | b[2]);
+        int16_t az_raw = (int16_t)(b[5] << 8 | b[4]);
+        ax_ms2 = ax_raw * (ACC_G_PER_LSB * G_SI);
+        ay_ms2 = ay_raw * (ACC_G_PER_LSB * G_SI);
+        az_ms2 = az_raw * (ACC_G_PER_LSB * G_SI);
       }
-    } else {
-      Serial.print("GYR[rad/s]: -, -, -  |  ACC[m/s^2]: -, -, -");
     }
 
-    Serial.print("  |  ");
-
-    // --- MAG (µT)
+    // --- MAG from LIS3MDL ---
     if (mag_ok) {
       sensors_event_t mag;
       lis3.getEvent(&mag);
-      Serial.print("MAG[µT]: ");
-      Serial.print(mag.magnetic.x,1); Serial.print(", ");
-      Serial.print(mag.magnetic.y,1); Serial.print(", ");
-      Serial.print(mag.magnetic.z,1);
-    } else {
-      Serial.print("MAG[µT]: -, -, -");
+      mx_uT = mag.magnetic.x;
+      my_uT = mag.magnetic.y;
+      mz_uT = mag.magnetic.z;
     }
 
-    Serial.print("  ||  ");
-
-    // --- GPS block
+    // --- GPS ---
     if (gps.valid) {
-      double altEllip = (gps.have_msl && gps.have_sep) ? (gps.alt_msl_m + gps.geoid_sep_m) : NAN;
-      Serial.print("GPS: lat="); Serial.print(gps.lat_deg,6);
-      Serial.print(", lon=");     Serial.print(gps.lon_deg,6);
-      Serial.print(", altMSL[m]="); if (gps.have_msl) Serial.print(gps.alt_msl_m,1); else Serial.print("-");
-      Serial.print(", altEllip[m]="); if (!isnan(altEllip)) Serial.print(altEllip,1); else Serial.print("-");
-      Serial.print(", sats="); Serial.print(gps.sats);
-    } else {
-      Serial.print("GPS: acquiring...");
+      lat  = gps.lat_deg;
+      lon  = gps.lon_deg;
+      sats = gps.sats;
+
+      if (gps.have_msl) {
+        alt = gps.alt_msl_m;  // using MSL altitude for GUI
+      } else {
+        alt = 0;              // or leave as 0 if unknown
+      }
     }
 
+    // --------- PRINT ONE CSV LINE ----------
+    // Format: time,ax,ay,az,gx,gy,gz,mx,my,mz,lat,lon,alt,sats
+
+    Serial.print(millis());      Serial.print(',');
+    Serial.print(ax_ms2, 3);     Serial.print(',');
+    Serial.print(ay_ms2, 3);     Serial.print(',');
+    Serial.print(az_ms2, 3);     Serial.print(',');
+    Serial.print(gx_rs, 3);      Serial.print(',');
+    Serial.print(gy_rs, 3);      Serial.print(',');
+    Serial.print(gz_rs, 3);      Serial.print(',');
+    Serial.print(mx_uT, 3);      Serial.print(',');
+    Serial.print(my_uT, 3);      Serial.print(',');
+    Serial.print(mz_uT, 3);      Serial.print(',');
+    Serial.print(lat, 6);        Serial.print(',');
+    Serial.print(lon, 6);        Serial.print(',');
+    Serial.print(alt, 2);        Serial.print(',');
+    Serial.print(sats);
     Serial.println();
   }
 }
