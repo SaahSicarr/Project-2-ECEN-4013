@@ -9,7 +9,8 @@ import time
 class MainApp:
     def __init__(self, root):
         self.root = root
-        self.root.title("Teensy Project 2 GUI")
+        self.base_title = "Teensy Project 2 GUI"
+        self.root.title(self.base_title)
         self.root.geometry("600x450")
 
         self.ser = None
@@ -23,11 +24,15 @@ class MainApp:
         self.port_var = tk.StringVar()
         self.available_ports = []
 
+        # Current connected port (for display)
+        self.current_port_var = tk.StringVar(value="Not connected")
+
         self.build_main_menu()
 
     # ---------- Main Menu ----------
     def build_main_menu(self):
         self.clear_frame()
+        self.root.title(self.base_title)
         self.main_frame.pack(fill="both", expand=True, padx=10, pady=10)
 
         ttk.Label(
@@ -97,29 +102,38 @@ class MainApp:
         self.clear_frame()
         self.data_frame.pack(fill="both", expand=True, padx=10, pady=10)
 
+        # Title
         ttk.Label(
             self.data_frame,
             text="Live Data Display",
             font=("Arial", 16)
-        ).grid(row=0, column=0, columnspan=2, pady=10)
+        ).grid(row=0, column=0, columnspan=2, pady=5)
+
+        # COM port indicator
+        ttk.Label(
+            self.data_frame,
+            textvariable=self.current_port_var,
+            font=("Arial", 10, "italic")
+        ).grid(row=1, column=0, columnspan=2, pady=(0, 10))
 
         # GPS Section
         ttk.Label(
             self.data_frame,
             text="GPS Data",
             font=("Arial", 14, "underline")
-        ).grid(row=1, column=0, sticky="w", padx=10)
+        ).grid(row=2, column=0, sticky="w", padx=10)
 
-        gps_labels = ["Latitude", "Longitude", "Elevation (m)"]
+        # NOTE: altitude from Adafruit_GPS (GGA) is MSL
+        gps_labels = ["Latitude", "Longitude", "Elevation (m, MSL)", "Satellites Locked"]
         self.gps_vars = {}
 
         for i, name in enumerate(gps_labels):
             ttk.Label(self.data_frame, text=f"{name}:").grid(
-                row=i + 2, column=0, sticky="e", padx=5
+                row=i + 3, column=0, sticky="e", padx=5
             )
             var = tk.StringVar(value="--")
             ttk.Label(self.data_frame, textvariable=var).grid(
-                row=i + 2, column=1, sticky="w"
+                row=i + 3, column=1, sticky="w"
             )
             self.gps_vars[name] = var
 
@@ -128,7 +142,7 @@ class MainApp:
             self.data_frame,
             text="IMU Data",
             font=("Arial", 14, "underline")
-        ).grid(row=5, column=0, sticky="w", padx=10, pady=(10, 0))
+        ).grid(row=7, column=0, sticky="w", padx=10, pady=(10, 0))
 
         imu_labels = [
             "Angular Velocity X", "Angular Velocity Y", "Angular Velocity Z",
@@ -139,11 +153,11 @@ class MainApp:
 
         for i, name in enumerate(imu_labels):
             ttk.Label(self.data_frame, text=f"{name}:").grid(
-                row=i + 6, column=0, sticky="e", padx=5
+                row=i + 8, column=0, sticky="e", padx=5
             )
             var = tk.StringVar(value="--")
             ttk.Label(self.data_frame, textvariable=var).grid(
-                row=i + 6, column=1, sticky="w"
+                row=i + 8, column=1, sticky="w"
             )
             self.imu_vars[name] = var
 
@@ -151,7 +165,7 @@ class MainApp:
             self.data_frame,
             text="End Display",
             command=self.stop_display
-        ).grid(row=15, column=0, columnspan=2, pady=15)
+        ).grid(row=18, column=0, columnspan=2, pady=15)
 
     # ---------- Start / Stop ----------
     def start_display(self):
@@ -173,6 +187,11 @@ class MainApp:
             time.sleep(2)
 
             self.running = True
+
+            # Update COM label + window title
+            self.current_port_var.set(f"Connected on {selected_port}")
+            self.root.title(f"{self.base_title} - {selected_port}")
+
             self.build_data_screen()
 
             # Start background thread to read serial data
@@ -198,6 +217,9 @@ class MainApp:
                 self.ser.close()
             except Exception:
                 pass
+        # Reset title and COM text
+        self.current_port_var.set("Not connected")
+        self.root.title(self.base_title)
         self.build_main_menu()
 
     def exit_app(self):
@@ -241,7 +263,8 @@ class MainApp:
                 # Update GPS display
                 self.gps_vars["Latitude"].set(lat)
                 self.gps_vars["Longitude"].set(lon)
-                self.gps_vars["Elevation (m)"].set(alt)
+                self.gps_vars["Elevation (m, MSL)"].set(alt)
+                self.gps_vars["Satellites Locked"].set(sats)
 
             except Exception as e:
                 print("Read error:", e)
